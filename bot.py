@@ -10,7 +10,7 @@ app = Flask(__name__)
 # ==================== CONFIG ====================
 
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
-OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "")
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openai/gpt-4-turbo-preview")
 
 # Garante que a URL não tenha barra no final para evitar erro de rota //
 EVOLUTION_API_URL = os.environ.get("EVOLUTION_API_URL", "").rstrip("/")
