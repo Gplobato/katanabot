@@ -1,4 +1,5 @@
-# bot.py - Katana ELITE7 (Blindado e Otimizado para Evolution v1.8.2)
+# bot.py - Katana ELITE7 (Evolution 1.8.2 FIXED)
+
 import os
 import re
 import requests
@@ -6,144 +7,190 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# ==================== CONFIGURAÇÃO ====================
+# ==================== CONFIG ====================
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openai/gpt-4-turbo-preview")
+
 EVOLUTION_API_URL = os.environ.get("EVOLUTION_API_URL", "")
 EVOLUTION_API_KEY = os.environ.get("EVOLUTION_API_KEY", "")
 EVOLUTION_INSTANCE = os.environ.get("EVOLUTION_INSTANCE", "")
 
 BOT_PERSONALITY = os.environ.get(
     "BOT_PERSONALITY",
-    "Você é Katana ELITE7, debochada e zoeira."
+    "Você é Katana ELITE7, debochada, sarcástica, engraçada e estilo melhor amiga gamer."
 )
-# =======================================================
+# =================================================
+
+
+# ==================== HELPERS ====================
 
 def normalize_phone(raw):
-    if not raw: return ""
-    # Limpa todos os sufixos para garantir que o Evolution não se engasga
-    s = str(raw).replace("@s.whatsapp.net", "").replace("@c.us", "").replace("@lid", "").replace("@g.us", "")
+    if not raw:
+        return ""
+
+    s = str(raw)
+    s = (
+        s.replace("@s.whatsapp.net", "")
+        .replace("@c.us", "")
+        .replace("@lid", "")
+        .replace("@g.us", "")
+    )
+
     digits = re.sub(r"\D", "", s)
     return digits
 
+
+# ==================== EVOLUTION SEND ====================
 def send_via_evolution(phone, message):
+    """
+    Compatível com Evolution v1.8.2
+    Agora usa textMessage (obrigatório)
+    Suporta número normal + grupos
+    """
+
     base_url = EVOLUTION_API_URL.rstrip('/')
     url = f"{base_url}/message/sendText/{EVOLUTION_INSTANCE}"
-    
-    clean_number = normalize_phone(phone)
-    
-    # 🎯 FIX DO ERRO 400: Payload exato da v1.8.2 (Simples e direto)
-    payload = {
-        "number": clean_number,
-        "text": message
-    }
-    
+
+    original = str(phone or "")
+    clean_number = normalize_phone(original)
+
+    # ===== GRUPO =====
+    if "@g.us" in original:
+        payload = {
+            "groupJid": original,
+            "textMessage": {
+                "text": message
+            }
+        }
+
+    # ===== PRIVADO =====
+    else:
+        payload = {
+            "number": clean_number,
+            "textMessage": {
+                "text": message
+            }
+        }
+
     headers = {
         "Content-Type": "application/json",
         "apikey": EVOLUTION_API_KEY
     }
-    
+
     try:
-        print(f"🚀 A enviar para: {clean_number}")
+        print(f"\n🚀 Enviando mensagem")
+        print("URL:", url)
+        print("Payload:", payload)
+
         r = requests.post(url, headers=headers, json=payload, timeout=15)
-        
-        print(f"📊 Status Envio: {r.status_code}")
-        if not r.ok:
-            print(f"❌ Erro da Evolution: {r.text[:200]}")
-            
+
+        print("Status:", r.status_code)
+        print("Resposta:", r.text[:500])
+
         return r.ok
+
     except Exception as e:
-        print(f"❌ Erro de conexão Evolution: {e}")
+        print("❌ Erro Evolution:", e)
         return False
 
+
+# ==================== HEALTH ====================
 @app.route("/", methods=["GET"])
 def health():
-    return "Katana ELITE7 (v1.8.2) Online 🔪", 200
+    return "Katana ELITE7 Online 🔪", 200
 
-# 🎯 FIX DO ERRO 404: Escuta ambas as rotas de webhook
+
+# ==================== WEBHOOK ====================
 @app.route("/webhook", methods=["POST", "GET"])
 @app.route("/webhook/messages-upsert", methods=["POST"])
 def webhook():
+
     if request.method == "GET":
         return jsonify({"status": "ok"}), 200
 
     body = request.get_json(force=True, silent=True)
-    if not body: return jsonify({"status": "ignored"}), 200
 
-    # 🎯 FIX DO ERRO 'list': Filtra apenas mensagens e ignora atualizações de status/chat
+    if not body:
+        return jsonify({"status": "ignored"}), 200
+
     event = body.get("event")
-    if event and event != "messages.upsert" and event != "MESSAGES_UPSERT":
+
+    # só reage a mensagens novas
+    if event not in ["messages.upsert", "MESSAGES_UPSERT"]:
         return jsonify({"status": "ignored_event"}), 200
 
     try:
         data = body.get("data", {})
-        
-        # Proteção extra: se for uma lista (mesmo após o filtro), pega apenas o primeiro item
-        if isinstance(data, list):
-            if len(data) > 0:
-                data = data[0]
-            else:
-                return jsonify({"status": "ignored_empty_list"}), 200
 
-        # Se continuar a não ser um dicionário, aborta para não quebrar
-        if not isinstance(data, dict):
-            return jsonify({"status": "ignored_not_dict"}), 200
+        if isinstance(data, list):
+            if not data:
+                return jsonify({"status": "empty"}), 200
+            data = data[0]
 
         key = data.get("key", {})
-        
-        # Ignora mensagens enviadas pelo próprio bot
-        if key.get("fromMe"): return jsonify({"status": "ignored_self"}), 200
 
-        # === FIX DO LID (iPhones/Dispositivos Vinculados) ===
+        # ignora mensagens do próprio bot
+        if key.get("fromMe"):
+            return jsonify({"status": "self"}), 200
+
         remote_jid = key.get("remoteJid")
         sender = body.get("sender")
-        
-        phone = remote_jid
-        if remote_jid and "@lid" in remote_jid:
-            if sender:
-                phone = sender
-            else:
-                phone = data.get("owner", remote_jid)
 
-        # === EXTRAÇÃO DA MENSAGEM ===
+        phone = remote_jid
+
+        # FIX LID
+        if remote_jid and "@lid" in remote_jid:
+            phone = sender or data.get("owner")
+
         msg = data.get("message", {})
+
         text = (
-            msg.get("conversation") or 
-            msg.get("extendedTextMessage", {}).get("text") or
-            msg.get("imageMessage", {}).get("caption")
+            msg.get("conversation")
+            or msg.get("extendedTextMessage", {}).get("text")
+            or msg.get("imageMessage", {}).get("caption")
         )
 
-        if not text: return jsonify({"status": "no_text"}), 200
+        if not text:
+            return jsonify({"status": "no_text"}), 200
 
-        print(f"📩 Mensagem recebida de {phone}: {text}")
+        print(f"\n📩 Mensagem recebida de {phone}: {text}")
 
-        # === CÉREBRO DA IA (OpenRouter) ===
+        # ================= OPENROUTER =================
         headers = {
             "Authorization": f"Bearer {OPENROUTER_KEY}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://katanabot.com",
-            "X-Title": "Katana Bot",
         }
+
         resp = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers=headers,
             json={
                 "model": OPENROUTER_MODEL,
-                "messages": [{"role": "system", "content": BOT_PERSONALITY}, {"role": "user", "content": text}]
+                "messages": [
+                    {"role": "system", "content": BOT_PERSONALITY},
+                    {"role": "user", "content": text}
+                ]
             },
-            timeout=20
+            timeout=25
         )
-        reply = resp.json()['choices'][0]['message']['content'] if resp.ok else "Tô meio bugada agora."
 
-        # === ENVIAR A RESPOSTA ===
+        if resp.ok:
+            reply = resp.json()['choices'][0]['message']['content']
+        else:
+            print("Erro OpenRouter:", resp.text)
+            reply = "Tô bugada agora, tenta de novo 😵"
+
+        # ================= SEND =================
         send_via_evolution(phone, reply)
-        
+
         return jsonify({"status": "sent"}), 200
 
     except Exception as e:
-        print(f"❌ Erro crítico no código: {e}")
+        print("❌ Erro crítico:", e)
         return jsonify({"error": str(e)}), 200
 
+
+# ==================== RUN ====================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
