@@ -13,7 +13,7 @@ OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 
 # Configuração da IA
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-AI_MODEL = "deepseek/deepseek-v3.2"  # DeepSeek 3.2
+AI_MODEL = "deepseek/deepseek-v3.2"  # DeepSeek V3.2
 
 # Personalidade do bot
 SYSTEM_PROMPT = """Você é a Katana, uma assistente virtual descontraída e amigável. 
@@ -143,6 +143,7 @@ def health():
     return jsonify({"status": "healthy"}), 200
 
 @app.route('/webhook', methods=['POST'])
+@app.route('/webhook/messages-upsert', methods=['POST'])
 def webhook():
     """Webhook principal - recebe eventos do Evolution API"""
     try:
@@ -153,7 +154,7 @@ def webhook():
         # Verifica se é mensagem nova
         event = data.get('event')
         
-        if event == 'messages.upsert':
+        if event == 'messages.upsert' or request.path == '/webhook/messages-upsert':
             return handle_message(data)
         
         return jsonify({"status": "event_ignored"}), 200
