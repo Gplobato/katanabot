@@ -1,4 +1,4 @@
-# bot.py — Katana ELITE7 (Corrigido para erro "Requires Property Text")
+# bot.py — Katana ELITE7 (Logs da IA de volta + Fix 404)
 
 import os
 import re
@@ -12,7 +12,6 @@ app = Flask(__name__)
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openai/gpt-4-turbo-preview")
 
-# Garante que a URL não tenha barra no final para evitar erro de rota //
 EVOLUTION_API_URL = os.environ.get("EVOLUTION_API_URL", "").rstrip("/")
 EVOLUTION_API_KEY = os.environ.get("EVOLUTION_API_KEY", "")
 EVOLUTION_INSTANCE = os.environ.get("EVOLUTION_INSTANCE", "")
@@ -28,10 +27,9 @@ BOT_PERSONALITY = os.environ.get(
 # ==================== HELPERS ====================
 
 def normalize_phone(raw: str) -> str:
-    """Remove qualquer coisa que não seja número"""
+    """Remove caracteres não numéricos e limpa sufixos"""
     if not raw:
         return ""
-    # Remove @s.whatsapp.net e outros sufixos antes de limpar
     cleaned = str(raw).split("@")[0]
     return re.sub(r"\D", "", cleaned)
 
@@ -43,9 +41,7 @@ def send_via_evolution(phone: str, message: str):
     
     number = normalize_phone(phone)
 
-    # CORREÇÃO DO ERRO 400:
-    # O log disse "instance requires property 'text'".
-    # Então enviamos o formato simples (flat), sem 'textMessage'.
+    # Formato simples (funciona na v1.8 e na maioria das v2 configuradas com text simples)
     payload = {
         "number": number,
         "text": message
@@ -57,7 +53,7 @@ def send_via_evolution(phone: str, message: str):
     }
 
     try:
-        print(f"\n🚀 Enviando para {number}...")
+        print(f"🚀 Enviando para {number}...")
         
         r = requests.post(url, headers=headers, json=payload, timeout=20)
 
@@ -65,7 +61,7 @@ def send_via_evolution(phone: str, message: str):
         
         if not r.ok:
             print(f"❌ Erro da Evolution: {r.text[:300]}")
-            # Se der erro 400 de novo, tenta o formato alternativo (fallback)
+            # Fallback para formato textMessage se der erro 400
             if r.status_code == 400 and "textMessage" in r.text:
                 print("⚠️ Tentando formato alternativo v2...")
                 payload_v2 = {
@@ -90,11 +86,15 @@ def health():
 
 # ==================== WEBHOOK ====================
 
+# Rota extra para silenciar o erro 404 do log (Evento SEND_MESSAGE)
+@app.route("/webhook/send-message", methods=["POST"])
+def webhook_send_message_ignore():
+    return jsonify({"status": "ignored"}), 200
+
 @app.route("/webhook", methods=["POST", "GET"])
 @app.route("/webhook/messages-upsert", methods=["POST"])
 def webhook():
 
-    # Evolution v2 as vezes faz check de saúde com GET
     if request.method == "GET":
         return jsonify({"status": "ok"}), 200
 
@@ -102,7 +102,7 @@ def webhook():
     if not body:
         return jsonify({"status": "ignored"}), 200
 
-    # Filtro de evento (Case insensitive)
+    # Filtra evento (aceita mensagens novas)
     event = body.get("event", "")
     if event.upper() != "MESSAGES.UPSERT":
         return jsonify({"status": "ignored_event"}), 200
@@ -116,32 +116,27 @@ def webhook():
                 return jsonify({"status": "empty_list"}), 200
             data = data[0]
 
-        # Se depois disso não for dict, aborta
         if not isinstance(data, dict):
             return jsonify({"status": "invalid_data"}), 200
 
         key = data.get("key", {})
 
-        # Ignora mensagens enviadas pelo próprio bot
+        # Ignora o próprio bot
         if key.get("fromMe"):
             return jsonify({"status": "self"}), 200
 
-        # === RESOLUÇÃO DE NÚMERO (LID/SENDER) ===
-        # A v2 costuma mandar o sender na raiz ou dentro de data
+        # === RESOLUÇÃO DE NÚMERO ===
         phone = body.get("sender") or data.get("pushName")
-        
         remote_jid = key.get("remoteJid")
         
-        # Se não achou sender fácil, usa o remoteJid
         if not phone:
             phone = remote_jid
             
-        # Se for LID (iPhone), tenta pegar o user real
+        # Tratamento anti-LID (iPhone)
         if remote_jid and "@lid" in remote_jid:
              if body.get("sender"):
                  phone = body.get("sender")
              else:
-                 # Fallback: tenta pegar do owner ou deixa o LID mesmo
                  phone = data.get("owner", remote_jid)
 
         print(f"\n📞 Mensagem de: {phone}")
@@ -161,14 +156,14 @@ def webhook():
         if not text:
             return jsonify({"status": "no_text"}), 200
 
-        print(f"📩 Conteúdo: {text}")
+        print(f"📩 Usuário disse: {text}")
 
-        # ================= OPENROUTER (IA) =================
+        # ================= IA (OpenRouter) =================
 
         headers = {
             "Authorization": f"Bearer {OPENROUTER_KEY}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://katanabot.com", # Boa prática OpenRouter
+            "HTTP-Referer": "https://katanabot.com",
         }
 
         resp = requests.post(
@@ -186,11 +181,13 @@ def webhook():
 
         if resp.ok:
             reply = resp.json()["choices"][0]["message"]["content"]
+            # AQUI ESTÁ A MÁGICA DE VOLTA 👇
+            print(f"🤖 Katana respondeu: {reply}") 
         else:
-            print(f"❌ OpenRouter erro: {resp.text}")
+            print(f"❌ Erro na IA: {resp.text}")
             reply = "Tô meio bugada agora, tenta já já! 😵"
 
-        # ================= ENVIAR RESPOSTA =================
+        # ================= ENVIAR =================
 
         send_via_evolution(phone, reply)
 
